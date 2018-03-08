@@ -2,6 +2,7 @@
 import distutils.spawn
 import json
 import logging
+import re
 import subprocess
 import http.client
 from base64 import b64decode, b64encode
@@ -13,6 +14,7 @@ from urllib.request import parse_http_list, parse_keqv_list
 
 
 HAS_GCLOUD = bool(distutils.spawn.find_executable('gcloud'))
+RE_BRANCH = re.compile('git_(master|beta|dev)')  # for CI generated tags
 
 
 def kubectl(cmd):
@@ -179,11 +181,11 @@ class Repo:
     def available_tags(self, path):
         return None
 
-    def latest_available_tag(self, path, allow_alpha=False,
-                             allow_beta=False, allow_rc=False):
+    def latest_available_tag(self, path, allow_alpha=False, allow_beta=False,
+                             allow_rc=False, must_match=None):
         tags = self.available_tags(path)
         if not tags:
-            raise CheckFailed("No tags found for {}".format(path))
+            raise CheckFailed("No tags found")
 
         if not allow_alpha:
             tags = [tag for tag in tags if '-alpha' not in tag]
@@ -191,6 +193,15 @@ class Repo:
                 tags = [tag for tag in tags if '-beta' not in tag]
                 if not allow_rc:
                     tags = [tag for tag in tags if '-rc' not in tag]
+
+            if not tags:
+                raise CheckFailed("Only pre-release tags found")
+
+        if must_match:
+            tags = [tag for tag in tags if must_match in tag]
+            if not tags:
+                raise CheckFailed(
+                    "No tags matching filter: {}".format(must_match))
 
         tags = sorted(tags, key=lambda t: parse_version(t))
         return tags[-1]
@@ -318,12 +329,17 @@ def main():
     for w in workloads:
         # Extract pull secrets that might be needed
         for i in w.images:
+            image_tag = i.tag
+            branch = RE_BRANCH.search(image_tag)
+            must_match = branch.group() if branch is not None else None
+
             try:
                 tag = i.repo.latest_available_tag(
                     path=i.path,
-                    allow_alpha='-alpha' in i.tag,
-                    allow_beta='-beta' in i.tag,
-                    allow_rc='-rc' in i.tag
+                    allow_alpha='-alpha' in image_tag,
+                    allow_beta='-beta' in image_tag,
+                    allow_rc='-rc' in image_tag,
+                    must_match=must_match
                 )
             except CheckFailed as e:
                 logging.warning("{}: {}".format(i.path, e))
